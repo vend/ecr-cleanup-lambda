@@ -72,6 +72,27 @@ def discover_delete_images(regionname):
 
     print("Images that are running")
     print(running_containers)
+
+    task_defs_paginator = ecs_client.get_paginator('list_task_definitions')
+    task_defs_active = []
+    for responsetask_defs_paginator in task_defs_paginator.paginate(status='ACTIVE'):
+        for arn in responsetask_defs_paginator['taskDefinitionArns']:
+            # Check if the task def has an image
+            response = ecs_client.describe_task_definition(
+                taskDefinition=arn
+            )
+            for container in response['taskDefinition']['containerDefinitions']:
+                if '.dkr.ecr.' in container['image'] and ":" in container['image']:
+                    if container['image'] not in task_defs_active:
+                        task_defs_active.append(container['image'])
+
+    print("Tasks in active revs")
+    print(task_defs_active)
+
+    for tda in task_defs_active:
+        running_containers.append(tda)
+
+    # Check for containers referenced in active task defs
     for repository in repositories:
         print ("------------------------")
         print("Starting with repository :"+repository['repositoryUri'])
@@ -97,6 +118,7 @@ def discover_delete_images(regionname):
                         if imageurl == runningimages:
                             if imageurl not in running_sha:
                                 running_sha.append(image['imageDigest'])
+
         for image in images:
             if images.index(image) >= IMAGES_TO_KEEP:
                 if 'imageTags' in image:
@@ -128,15 +150,21 @@ def appendtotaglist(list,id):
     if not id in list:
         list.append(id)
 
+def chunks(l, n):
+    """Yield successive n-sized chunks from l."""
+    for i in xrange(0, len(l), n):
+        yield l[i:i + n]
 
 def delete_images(ecr_client, deletesha,deletetag, id, name):
     if not DRYRUN:
-        delete_response = ecr_client.batch_delete_image(
-            registryId=id,
-            repositoryName=name,
-            imageIds=deletesha
-         )
-        print (delete_response)
+        # Batch delete can only operate on 100 images at a time
+        for chunk in chunks(deletesha, 100):
+            delete_response = ecr_client.batch_delete_image(
+                registryId=id,
+                repositoryName=name,
+                imageIds=chunk
+             )
+            print (delete_response)
     else:
         print("{")
         print("registryId:"+id)
@@ -159,6 +187,6 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     REGION = args.region
-    DRYRUN = args.dryrun
+    DRYRUN = args.dryrun.lower() != 'false'
     IMAGES_TO_KEEP = int(args.imagestokeep)
     handler(request, None)
